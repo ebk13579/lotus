@@ -678,10 +678,11 @@ func Copy(ctx context.Context, from, to blockstore.Blockstore, root cid.Cid) err
 	var numBlocks int
 	var totalCopySize int
 
-	const batchSize = 128
-	freeBufs := make(chan []block.Block, 2)
-	toFlush := make(chan []block.Block, 2)
-	for i := 0; i < 2; i++ {
+	const batchSize = 256
+	const bufCount = 3
+	freeBufs := make(chan []block.Block, bufCount)
+	toFlush := make(chan []block.Block, bufCount)
+	for i := 0; i < bufCount; i++ {
 		freeBufs <- make([]block.Block, 0, batchSize)
 	}
 
@@ -724,12 +725,7 @@ func Copy(ctx context.Context, from, to blockstore.Blockstore, root cid.Cid) err
 
 	if len(batch) > 0 {
 		toFlush <- batch
-		_, ok := <-freeBufs
-		if !ok {
-			return <-errFlushChan
-		}
 	}
-	<-freeBufs            // get the final buffer out or closed channel
 	close(toFlush)        // close the toFlush triggering the loop to end
 	err := <-errFlushChan // get error out or get nil if it was closed
 	if err != nil {
