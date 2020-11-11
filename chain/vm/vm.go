@@ -678,7 +678,7 @@ func Copy(ctx context.Context, from, to blockstore.Blockstore, root cid.Cid) err
 	var numBlocks int
 	var totalCopySize int
 
-	const batchSize = 256
+	const batchSize = 128
 	const bufCount = 3
 	freeBufs := make(chan []block.Block, bufCount)
 	toFlush := make(chan []block.Block, bufCount)
