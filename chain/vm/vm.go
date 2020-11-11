@@ -678,17 +678,42 @@ func Copy(ctx context.Context, from, to blockstore.Blockstore, root cid.Cid) err
 	var numBlocks int
 	var totalCopySize int
 
-	var batch []block.Block
+	const batchSize = 128
+	freeBufs := make(chan []block.Block, 2)
+	toFlush := make(chan []block.Block, 2)
+	for i := 0; i < 2; i++ {
+		freeBufs <- make([]block.Block, 0, batchSize)
+	}
+
+	errFlushChan := make(chan error)
+
+	go func() {
+		for b := range toFlush {
+			if err := to.PutMany(b); err != nil {
+				close(freeBufs)
+				errFlushChan <- xerrors.Errorf("batch put in copy: %w", err)
+				return
+			}
+			freeBufs <- b[:0]
+		}
+		close(errFlushChan)
+		close(freeBufs)
+	}()
+
+	var batch = <-freeBufs
 	batchCp := func(blk block.Block) error {
 		numBlocks++
 		totalCopySize += len(blk.RawData())
 
 		batch = append(batch, blk)
-		if len(batch) > 100 {
-			if err := to.PutMany(batch); err != nil {
-				return xerrors.Errorf("batch put in copy: %w", err)
+
+		if len(batch) >= batchSize {
+			toFlush <- batch
+			var ok bool
+			batch, ok = <-freeBufs
+			if !ok {
+				return <-errFlushChan
 			}
-			batch = batch[:0]
 		}
 		return nil
 	}
@@ -698,9 +723,17 @@ func Copy(ctx context.Context, from, to blockstore.Blockstore, root cid.Cid) err
 	}
 
 	if len(batch) > 0 {
-		if err := to.PutMany(batch); err != nil {
-			return xerrors.Errorf("batch put in copy: %w", err)
+		toFlush <- batch
+		_, ok := <-freeBufs
+		if !ok {
+			return <-errFlushChan
 		}
+	}
+	<-freeBufs            // get the final buffer out or closed channel
+	close(toFlush)        // close the toFlush triggering the loop to end
+	err := <-errFlushChan // get error out or get nil if it was closed
+	if err != nil {
+		return err
 	}
 
 	span.AddAttributes(
